@@ -1,0 +1,4 @@
+{:deps {io.github.nextjournal/clerk {:mvn/version "0.8.451"}
+        arrowic/arrowic {:mvn/version "0.1.1"}
+        clojure2d/clojure2d {:mvn/version "1.4.4"}
+        com.billpiel/sayid {:mvn/version "0.1.0"}}}
