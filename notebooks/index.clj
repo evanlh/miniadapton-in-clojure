@@ -1,12 +1,12 @@
-(ns ^:nextjournal.clerk/no-cache miniadapton
+(ns miniadapton  ^:nextjournal.clerk/no-cache
   (:require [nextjournal.clerk :as clerk]
             [clojure.pprint :as pp]
             [clojure.set :as set]))
 
 ;; ## Incremental Computation with MiniAdapton in Clojure
-;; Good day, friends. Today, we're here to explore a paper on a system called MiniAdapton. Adapton is an incremental computation engine, described in full detail here.[]. Incremental Computation is the process of only re-computing the parts of a computation graph that need to be recomputed when the inputs to the computation graph change. The 'mini' prefix in the paper is in reference to miniKanren[].
+;; Good day, friends. Today, we're here to explore a paper on a system called MiniAdapton. Adapton is an incremental computation engine, [originally described here](http://adapton.org/). Incremental Computation is the process of only re-computing the parts of a computation graph that need to be recomputed when the inputs to the computation graph change. [MiniAdapton](https://arxiv.org/abs/1609.05337) is a compact version of Adapton in Scheme, & since adapted to many other languages. The 'mini' prefix in the paper is in reference to [miniKanren](http://minikanren.org/).
 
-;; I will attempt to use standard Clojure idioms where possible, but since the paper is explicitly about making memoization safe in the presence of mutation, we should be prepared to deal with a few footguns....
+;; This is my attempt at a port of the system described in the MiniAdapton paper to Clojure. If all goes well, I hope to use the Clerk environment to better illustrate some of what's happening using visuals. As a port, I'll attempt to use standard Clojure idioms where possible, but since the paper is explicitly about making memoization safe in the presence of *mutation*-- and Clojure is obviously very big on *immutability*-- we should be prepared to deal with a few footguns....
 
 ;; My purpose here is to:
 ;; - Learn some Clojure, inside of the excellent Clerk live-programming environment
@@ -137,13 +137,13 @@
   (adapton-result-set! a val)
   (adapton-dirty! a))
 
-;; Quick refresher: A "sub" computation is a computation with a dependency on another computation-- a "super" is the reverse, a computation that's depended on by a sub.
+;; Quick refresher: A `sub` computation is a computation with a dependency on another computation-- a `super` is the reverse, a computation that's depended on by a `sub`.
 ;; We're representing these dependencies in a graph which we can add
-;; or remove edges from in the form of these Adapton nodes. (Every node models its in/out edges as a set.)
+;; or remove edges from in the form of these Adapton nodes. (Every node models its in/out edges as a Set.)
 ;; Each of the nodes also contains a result, a thunk, and a clean? marker. From the paper:
-;; thunk - the computation to cache
-;; result - cached result of the computation
-;; clean? - whether or not the cached result is valid
+;; - `thunk` - the computation to cache
+;; - `result` - cached result of the computation
+;; - `clean?` - whether or not the cached result is valid
 
 ;; The paper provides a test of this interface....
 ;; First we create two ref cells with values...
@@ -170,7 +170,7 @@
 ;; w00t!
 ;; Actually, in Clerk this result doesn't print correctly... probably need to clear the cache?
 ;; Lol with no-cache prefix it prints the *new* value twice....
-;; Semi-solved this putting no-cache in the namespace.... other issues tho...
+;; no-cache in the namespace doesn't seem to help much? it did for a minimal atom example
 
 ;; ### MiniAdapton in Clojure
 
@@ -204,6 +204,7 @@
 (def a (make-athunk (fn [] (+ (adapton-force r) 3))))
 (adapton-force a)
 
+;; #### adapt macro
 ;; > A useful macro styled after delay takes expression and turns them into athunks
 
 ;; Clojure's `defmacro` form looks more like `defn` than the syntax-matching of
@@ -212,24 +213,26 @@
 (defmacro adapt [expr]
   `(make-athunk (fn [] ~expr)))
 
-;; The end result is cleaner syntax, now we can rewrite the above using `adapt`:
+;; The end result is cleaner syntax, now we can rewrite our earlier example using `adapt`:
 (def b (adapt (+ (adapton-force r) 3)))
 (adapton-force b)
 
+;; #### define-amemo
 ;; Finally, we need to work up to defining the `define-amemo` macro...
 
-;; produces memoized functions returning athunks
-;; Another win for Clojure's standard library, we're using the native `memoize` function
+;; > The first function produces memoized functions returning athunks
+;;
+;; Another win for Clojure's standard library, we can use the native `memoize` function
 (defn adapton-memoize-lazy [f]
   (memoize (fn [x] (adapt (apply f x)))))
 
-;; similar to above but immediately forces the athunk
+;; > `adapton-memoize` operates by taking the result of `adapton-memoize-lazy` and making a new function equivalent except that it returns the result of forcing the athunk instead of the athunk itself.
 (defn adapton-memoize [f]
   (let [f* (adapton-memoize-lazy f)]
     (fn [x] (adapton-force (apply f* x)))))
 
 ;; we'll call these fn-amemo-1 since `fn` is the Clojure `lambda` equivalent
-;; ... actually, the fn macro is fairly complex and I got stuck on this part for a while.
+;; TODO ... actually, the fn macro is fairly complex and I got stuck on this part for a while.
 ;; Let's punt on this and come back to it. It doesn't seem too painful for a user to simply
 ;; call (def name (adapton-memoize (fn ...))) or (adapton-memoize (fn ...)) in the interim..;; (defmacro fn-amemo-1 [& args])
 
@@ -241,6 +244,7 @@
 (defmacro def-avar [name expr]
   `(def ~name (adapton-ref (adapt ~expr))))
 
+;; TODO why do we force twice?
 (defn avar-get [v]
   (adapton-force (adapton-force v)))
 
@@ -248,40 +252,45 @@
   `(adapton-ref-set! ~v (adapt ~expr)))
 
 ;; Translating the above examples to avars...
-;; (def-avar v1 2)
-;; (def-avar v2 (+ (avar-get v1) 4))
-;; (def-avar b (+ (avar-get v1) (avar-get v2)))
-;; (avar-get b)
-;; (avar-set! v1 10)
-;; (avar-get b)
+(def-avar v1 2)
+(def-avar v2 (+ (avar-get v1) 4))
+(def-avar b (+ (avar-get v1) (avar-get v2)))
+(avar-get b)
+(avar-set! v1 10)
+(avar-get b)
 
-;; Again, when evaluated in the editor this looks good, but in Clerk the second result is returned twice. This is likely a hint that we're doing something very non-standard-- which we knew we are with the ^:volatile-mutable metadata.
-
+;; Again, when evaluated in the editor this looks good, but in Clerk the second result is returned twice....
 
 ;; This should work with other datatypes too of course. Like strings...
-;; (def-avar firstname "Evan")
-;; (def-avar welcome (str "Welcome to MiniAdapton, " (avar-get firstname)))
-;; (avar-get welcome)
-;; (avar-set! firstname "Jack")
-;; (avar-get welcome)
+(do
+  (def-avar firstname "Evan")
+  (def-avar welcome (str "Welcome to MiniAdapton, " (avar-get firstname)))
+  (avar-get welcome))
+(do
+  (avar-set! firstname "Jack")
+  (avar-get welcome))
 
 ;; And sets....
-;; (def-avar set1 #{:if :how :not :now :venn :be})
-;; (def-avar set2 #{:if :where :not :now :see :venn})
-;; (def-avar venn (set/intersection (avar-get set1) (avar-get set2)))
-;; (avar-get venn)
-;; (avar-set! set1 #{:not :venn})
-;; (avar-get venn)
+(do
+  (def-avar set1 #{:if :how :not :now :venn :be})
+  (def-avar set2 #{:if :where :not :now :see :venn})
+  (def-avar venn (set/intersection (avar-get set1) (avar-get set2)))
+  (avar-get venn))
+(do
+  (avar-set! set1 #{:not :venn})
+  (avar-get venn))
 
 ;; And because we're evaluating actual expressions in here we get something that
-;; starts to look a little like the beginning of an equation solver. Let's say we have two
-;; points on a line, of course we can calculate the midpoint:
-;; (def-avar x1 10)
-;; (def-avar x2 20)
-;; (def-avar midpoint (/ (+ (avar-get x1) (avar-get x2)) 2))
-;; (avar-get midpoint)
-;; (avar-set! x2 -10)
-;; (avar-get midpoint)
+;; starts to look (a little!) like some sort of constraint system. Let's say we have two
+;; points on a line, of course we can calculate the midpoint for a third point:
+(do
+  (def-avar x1 10)
+  (def-avar x2 20)
+  (def-avar midpoint (/ (+ (avar-get x1) (avar-get x2)) 2))
+  (avar-get midpoint))
+(do
+  (avar-set! x2 -10)
+  (avar-get midpoint))
 
 ;; Some misc observations:
 ;; - This is a lazy, "pull" model of incremental computation, which seems like it would influence where you can successfully use this. For example, it's harder to see this working well for interactive UIs unless they know to poll relavent variables. Could you de-lazify it, or mark certain variables as "outputs" that always flow thru immediately?
