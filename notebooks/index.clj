@@ -1,12 +1,14 @@
-(ns miniadapton  ^:nextjournal.clerk/no-cache
+^{:nextjournal.clerk/visibility #{:hide-ns}}
+(ns miniadapton ^:nextjournal.clerk/no-cache
   (:require [nextjournal.clerk :as clerk]
             [clojure.pprint :as pp]
-            [clojure.set :as set]))
+            [clojure.set :as set])
+    (:use [clojure.test]))
 
 ;; ## Incremental Computation with MiniAdapton in Clojure
-;; Good day, friends. Today, we're here to explore a paper on a system called MiniAdapton. Adapton is an incremental computation engine, [originally described here](http://adapton.org/). Incremental Computation is the process of only re-computing the parts of a computation graph that need to be recomputed when the inputs to the computation graph change. [MiniAdapton](https://arxiv.org/abs/1609.05337) is a compact version of Adapton in Scheme, & since adapted to many other languages. The 'mini' prefix in the paper is in reference to [miniKanren](http://minikanren.org/).
+;; Good day, friends. Today, we're here to explore a paper on a system called MiniAdapton. [Adapton](http://adapton.org/) is an incremental computation engine introduced in a [2014 paper](http://matthewhammer.org/adapton/adapton-pldi2014.pdf). [Incremental Computation](https://en.wikipedia.org/wiki/Incremental_computing) is the process of only re-computing the parts of a computation graph that need to be recomputed when the inputs to the computation graph change. [MiniAdapton](https://arxiv.org/abs/1609.05337) is a compact version of Adapton in Scheme, & since adapted to other languages. (The 'mini' prefix in the paper is in reference to [miniKanren](http://minikanren.org/)).
 
-;; This is my attempt at a port of the system described in the MiniAdapton paper to Clojure. If all goes well, I hope to use the Clerk environment to better illustrate some of what's happening using visuals. As a port, I'll attempt to use standard Clojure idioms where possible, but since the paper is explicitly about making memoization safe in the presence of *mutation*-- and Clojure is obviously very big on *immutability*-- we should be prepared to deal with a few footguns....
+;; This is my attempt at a port of the system described in the MiniAdapton paper to Clojure. If all goes well, I hope to use the [Clerk](https://github.com/nextjournal/clerk) environment to visually illustrate some of how it works. As a port, I'll attempt to use standard Clojure idioms where possible, but since the paper is explicitly about making memoization safe in the presence of *mutation*-- and Clojure is obviously very big on *immutability*-- there might be a few footguns. I encourage you to [download this repo](https://github.com/evanlh/miniadapton-in-clojure/) so you can play with it yourself in [Clerk](https://github.com/nextjournal/clerk). This static site was generated entirely within its notebook environment.
 
 ;; My purpose here is to:
 ;; - Learn some Clojure, inside of the excellent Clerk live-programming environment
@@ -23,7 +25,7 @@
 ;; Clojure we need to declare them explicitly here, because otherwise
 ;; fields marked ^:volatile-mutable aren't accessible on the public
 ;; interface.
-^{::clerk/visibility :fold ::clerk/viewer :hide-result}
+;; ^{::clerk/visibility :fold ::clerk/viewer :hide-result}
 (comment
   (defprotocol IAdapton
     (adapton-thunk [this])
@@ -57,34 +59,81 @@
     ))
 
 ;; REDUX! We want to use atoms instead of the volatile-mutable deftype....
-(defn ->Adapton [thunk result sub super clean?]
-  (atom {:thunk thunk, :result result, :sub sub, :super super, :clean clean?}))
+(defn adapton-cons [thunk result sub super clean?]
+    (atom {:thunk thunk, :result result, :sub sub, :super super, :clean clean?}))
 
 (defn adapton-thunk [a] (:thunk @a))
 ;; functions that end in a ! are a lisp convention that says "hey! I'm mutatin' here!"
-(defn adapton-thunk-set! [a thunk] (reset! a (assoc @a :thunk thunk)))
+(defn adapton-thunk-set! [a thunk]
+  (assert (fn? thunk))
+  (assert (identical? (type a) clojure.lang.Atom))
+  (swap! a assoc :thunk thunk))
+
+
+(deftest thunk-test
+  (let [a (adapton-cons nil nil #{} #{} false)
+        f (fn [] 5)]
+    (assert (= (adapton-thunk a) nil))
+    (adapton-thunk-set! a f)
+    (assert (= (adapton-thunk a) f))))
+
 (defn adapton-result [a] (:result @a))
-(defn adapton-result-set! [a res] (reset! a (assoc @a :result res)))
+(defn adapton-result-set! [a res] (swap! a assoc :result res))
+
+(deftest result-test
+  (let [a (adapton-cons nil 3 #{} #{} false)]
+    (assert (= (adapton-result a) 3))
+    (adapton-result-set! a 5)
+    (assert (= (adapton-result a) 5))))
+
 (defn adapton-sub [a] (:sub @a))
-(defn adapton-sub-set! [a sub] (reset! a (assoc @a :sub sub)))
+(defn adapton-sub-set! [a sub]
+  (assert (identical? (type a) clojure.lang.Atom))
+  (swap! a assoc :sub sub))
+
+(deftest sub-test
+  (let [a (adapton-cons nil nil #{} #{} false)
+        b (adapton-cons nil nil #{} #{} false)]
+    (assert (= (adapton-sub a) #{}))
+    (adapton-sub-set! a #{b})
+    (assert (contains? (adapton-sub a) b))))
+
+
 (defn adapton-super [a] (:super @a))
-(defn adapton-super-set! [a super] (reset! a (assoc @a :super super)))
+(defn adapton-super-set! [a super]
+  (assert (identical? (type a) clojure.lang.Atom))
+  (swap! a assoc :super super))
+
+(deftest super-test
+  (let [a (adapton-cons nil nil #{} #{} false)
+        b (adapton-cons nil nil #{} #{} false)]
+    (assert (= (adapton-super a) #{}))
+    (adapton-super-set! a #{b})
+    (assert (contains? (adapton-super a) b))))
+
 ;; functions or vars that end in ? are a lisp convention indicating they're boolean
 (defn adapton-clean? [a] (:clean @a))
-(defn adapton-clean?-set! [a clean?] (reset! a (assoc @a :clean clean?)))
+(defn adapton-clean?-set! [a clean?]
+  (assert (boolean? clean?))
+  (assert (identical? (type a) clojure.lang.Atom))
+  (swap! a assoc :clean clean?))
+
+(deftest clean-test
+  (let [a (adapton-cons nil nil #{} #{} false)]
+    (assert (= (adapton-clean? a) false))
+    (adapton-clean?-set! a true)
+    (assert (= (adapton-clean? a) true))))
 
 ;; We want a custom visualizer anyway, but it turns out this is necessary even before
 ;; that because otherwise we can make Clerk stack overflow due to node's cyclic structure.
-(clerk/add-viewers! [{:pred #(and (instance? clojure.lang.Atom %) (map? @%) (contains? @% :thunk))
-                     :render-fn '#(v/html [:div.inline-block.rounded-sm.shadow (meta %)])}
-                    ])
+;; (clerk/add-viewers! [{:pred #(and (instance? clojure.lang.Atom %) (map? @%) (contains? @% :thunk))
+;;                      :render-fn '#(v/html [:div.inline-block.rounded-sm.shadow (meta %)])}
+;;                     ])
 
-(def a (->Adapton nil nil #{} #{} false))
+(def a (adapton-cons nil nil #{} #{} false))
 (adapton-thunk a)
 (adapton-thunk-set! a (fn [] 1))
 (adapton-clean? a)
-
-(type @(->Adapton nil nil #{} #{} false))
 
 ;; To add a node to the directed compute graph we take the super node
 ;; `a-super`and the sub-node `a-sub`,
@@ -100,10 +149,22 @@
   (adapton-sub-set! a-super (disj (adapton-sub a-super) a-sub))
   (adapton-super-set! a-sub (disj (adapton-super a-sub) a-super)))
 
+(deftest dcg-test
+  (let [a (adapton-cons nil nil #{} #{} false)
+        b (adapton-cons nil nil #{} #{} false)]
+    (adapton-add-dcg-edge! a b)
+    (assert (contains? (adapton-sub a) b))
+    (assert (contains? (adapton-super b) a))
+    (assert (not (contains? (adapton-super a) b)))
+    (assert (not (contains? (adapton-sub b) a)))
+    (adapton-del-dcg-edge! a b)
+    (assert (not (contains? (adapton-sub a) b)))
+    (assert (not (contains? (adapton-super b) a)))))
+
 ;; Clojure is already winning us code brevity, since we can use the
 ;; native Set implementation instead of rolling our own like
 ;; they do in Appendix D in the original paper.
-(defn make-athunk [thunk] (->Adapton thunk nil #{} #{} false))
+(defn make-athunk [thunk] (adapton-cons thunk nil #{} #{} false))
 
 (defn adapton-compute [a]
   (if (adapton-clean? a)
@@ -115,17 +176,41 @@
       (adapton-result-set! a ((adapton-thunk a)))
       (adapton-compute a))))
 
+;; TODO this isn't really testing the essential parts...
+;; ... need to have a dependency and check the edge?
+(deftest compute-test
+  (let [a (make-athunk (fn [] 5))
+        b (adapton-cons (fn [] 15) 10 #{} #{} true)
+        a-computed (adapton-compute a)
+        b-computed (adapton-compute b)]
+    (assert (= a-computed 5))
+    (assert (= b-computed 10))
+    ))
+
 (defn adapton-dirty! [a]
   (when (adapton-clean? a)
     (adapton-clean?-set! a false)
-    (for [x (adapton-super a)]
+    ;; insidious bug in the first version using `for`, the super node never actually
+    ;; gets dirtied because `for` is lazy
+    (doseq [x (adapton-super a)]
       (adapton-dirty! x))))
 
+(deftest dirty-test
+  (let [a (adapton-cons nil nil #{} #{} true)
+        b (adapton-cons nil nil #{} #{} true)]
+    (assert (adapton-clean? a))
+    (assert (adapton-clean? b))
+    (adapton-add-dcg-edge! a b)
+    (assert (contains? (adapton-super b) a))
+    (adapton-dirty! b)
+    (assert (not (adapton-clean? b)))
+    (assert (not (adapton-clean? a)))))
+
 ;; Unlike in the Scheme implementation we made thunk's mutable as well
-;; since there's no Clojure letrec equivalent for this implementation
-;; of adapton-ref
+;; since there's no Clojure letrec equivalent to let us refer to the name
+;; `a` we're defining inside adapton-ref
 (defn adapton-ref [val]
-  (let [a (->Adapton nil
+  (let [a (adapton-cons nil
                      val
                      #{}
                      #{}
@@ -154,18 +239,20 @@
 ;; ... which depends on both of the ref cells
 ;; and when invoked subtracts the new value of
 ;; r2 from r1
-(def a
+(def b
   (make-athunk (fn []
-                 (adapton-add-dcg-edge! a r1)
-                 (adapton-add-dcg-edge! a r2)
+                 (adapton-add-dcg-edge! b r1)
+                 (adapton-add-dcg-edge! b r2)
                  (- (adapton-compute r1)
                     (adapton-compute r2))
-                 )))
-;; Now we can compute the dependent cell `a`...
-(adapton-compute a)
+                  )))
+;; Now we can compute the dependent cell `b`...
+
+(adapton-compute b)
 ;; That looks right... Let's change the r1 ref and recompute...
-(adapton-ref-set! r1 2)
-(adapton-compute a)
+
+(do (adapton-ref-set! r1 2)
+    (adapton-compute b))
 
 ;; w00t!
 ;; Actually, in Clerk this result doesn't print correctly... probably need to clear the cache?
@@ -200,9 +287,9 @@
 
 
 ;; This already cleans up a lot of what we were doing above...
-(def r (adapton-ref 5))
-(def a (make-athunk (fn [] (+ (adapton-force r) 3))))
-(adapton-force a)
+(def r3 (adapton-ref 5))
+(def c (make-athunk (fn [] (+ (adapton-force r3) 3))))
+(println (adapton-force c))
 
 ;; #### adapt macro
 ;; > A useful macro styled after delay takes expression and turns them into athunks
@@ -214,7 +301,7 @@
   `(make-athunk (fn [] ~expr)))
 
 ;; The end result is cleaner syntax, now we can rewrite our earlier example using `adapt`:
-(def b (adapt (+ (adapton-force r) 3)))
+(def b (adapt (+ (adapton-force r3) 3)))
 (adapton-force b)
 
 ;; #### define-amemo
@@ -252,16 +339,16 @@
   `(adapton-ref-set! ~v (adapt ~expr)))
 
 ;; Translating the above examples to avars...
-(def-avar v1 2)
-(def-avar v2 (+ (avar-get v1) 4))
-(def-avar b (+ (avar-get v1) (avar-get v2)))
-(avar-get b)
-(avar-set! v1 10)
-(avar-get b)
+(do
+  (def-avar v1 2)
+  (def-avar v2 (+ (avar-get v1) 4))
+  (def-avar v3 (+ (avar-get v1) (avar-get v2)))
+  (avar-get v3))
+(do
+  (avar-set! v1 10)
+  (avar-get v3))
 
-;; Again, when evaluated in the editor this looks good, but in Clerk the second result is returned twice....
-
-;; This should work with other datatypes too of course. Like strings...
+;; This works with other datatypes too of course. Like strings...
 (do
   (def-avar firstname "Evan")
   (def-avar welcome (str "Welcome to MiniAdapton, " (avar-get firstname)))
@@ -272,7 +359,7 @@
 
 ;; And sets....
 (do
-  (def-avar set1 #{:if :how :not :now :venn :be})
+  (def-avar set1 #{:if :how :not :now :be :venn })
   (def-avar set2 #{:if :where :not :now :see :venn})
   (def-avar venn (set/intersection (avar-get set1) (avar-get set2)))
   (avar-get venn))

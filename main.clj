@@ -5,5 +5,4 @@
   ;; start with file watcher for these sub-directory paths
   (clerk/serve! {:watch-paths ["notebooks"]})
   (clerk/show! "notebooks/index.clj")
-
   )
